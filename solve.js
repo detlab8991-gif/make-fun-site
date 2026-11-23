@@ -397,7 +397,7 @@ function inline(s, env) {
  */
 function renderMarkdown(lines, env, slugCache) {
   const ids = new Set();
-  let html = '';
+  const blocks = [];
   const toc = [];
   let excerpt = null;
   let i = 0;
@@ -419,7 +419,7 @@ function renderMarkdown(lines, env, slugCache) {
         const cls = lang === '' ? '' : ` class="language-${esc(lang)}"`;
         let code = '';
         for (const l of body) code += `${esc(l)}\n`;
-        html += `<pre><code${cls}>${code}</code></pre>\n`;
+        blocks.push(`<pre><code${cls}>${code}</code></pre>\n`);
         continue;
       }
     } else if (c0 === 35) { // '#': maybe a heading
@@ -427,7 +427,7 @@ function renderMarkdown(lines, env, slugCache) {
       if (heading !== null) {
         const id = uniqueSlug(slugifyCached(heading.text, slugCache), ids);
         const h = inline(heading.text, env);
-        html += `<h${heading.depth} id="${id}">${h}</h${heading.depth}>\n`;
+        blocks.push(`<h${heading.depth} id="${id}">${h}</h${heading.depth}>\n`);
         if (heading.depth === 2 || heading.depth === 3) toc.push({ level: heading.depth, id, html: h });
         i++;
         continue;
@@ -437,12 +437,12 @@ function renderMarkdown(lines, env, slugCache) {
       while (i < n && lines[i].charCodeAt(0) === 62) body.push(lines[i++].replace(/^> ?/, ''));
       const ls = [];
       for (const l of body) { const t = trimLine(l); if (t !== '') ls.push(t); }
-      html += ls.length === 0 ? '<blockquote>\n</blockquote>\n' : `<blockquote>\n<p>${inline(ls.join('\n'), env)}</p>\n</blockquote>\n`;
+      blocks.push(ls.length === 0 ? '<blockquote>\n</blockquote>\n' : `<blockquote>\n<p>${inline(ls.join('\n'), env)}</p>\n</blockquote>\n`);
       continue;
     } else if (c0 === 32 || c0 === 9) { // space/tab: maybe blank
       if (isBlank(line)) { i++; continue; }
     } else if (c0 === 45 || c0 === 42 || (c0 >= 48 && c0 <= 57)) { // '-' '*' digit: hr or a list
-      if ((c0 === 45 || c0 === 42) && isHr(line)) { html += '<hr>\n'; i++; continue; }
+      if ((c0 === 45 || c0 === 42) && isHr(line)) { blocks.push('<hr>\n'); i++; continue; }
       const lm = listMatch(line);
       if (lm !== null) {
         const isOrdered = lm.ordered;
@@ -462,7 +462,7 @@ function renderMarkdown(lines, env, slugCache) {
         const open = isOrdered && start !== 1 ? `<ol start="${start}">` : `<${tag}>`;
         let listHtml = `${open}\n`;
         for (const parts of items) listHtml += `<li>${inline(parts.join('\n'), env)}</li>\n`;
-        html += `${listHtml}</${tag}>\n`;
+        blocks.push(`${listHtml}</${tag}>\n`);
         continue;
       }
     }
@@ -471,9 +471,9 @@ function renderMarkdown(lines, env, slugCache) {
     while (i < n && !endsParagraph(lines[i])) body.push(trimLine(lines[i++]));
     const h = inline(body.join('\n'), env);
     if (excerpt === null) excerpt = h;
-    html += `<p>${h}</p>\n`;
+    blocks.push(`<p>${h}</p>\n`);
   }
-  return { html, toc, excerpt: excerpt ?? '' };
+  return { html: blocks.join(''), toc, excerpt: excerpt ?? '' };
 }
 
 // Slug with a per-case cache (the same string slugs the same way every time).
@@ -616,9 +616,22 @@ function renderOps(ops, scope, ctx, depth, out) {
     } else if (n.k === 4) {
       const xs = lookup(scope, n.p);
       if (!Array.isArray(xs)) continue;
+      // One frame reused for every iteration (was: three fresh objects per
+      // iteration — vars, loop, and the scope wrapper). Safe: rendering is
+      // synchronous, nothing keeps the frame or its vars past the iteration,
+      // and a nested for makes its own frame. Edge: a loop variable named
+      // "loop" is shadowed by the loop object (later key wins in the
+      // original literal too), so it is never assigned here.
+      const loop = { index: 1, first: true, last: false, length: xs.length };
+      const vars = { [n.name]: xs[0], loop };
+      const frame = { vars, parent: scope };
+      const setElem = n.name !== 'loop';
       for (let k = 0; k < xs.length; k++) {
-        const vars = { [n.name]: xs[k], loop: { index: k + 1, first: k === 0, last: k === xs.length - 1, length: xs.length } };
-        renderOps(n.body, { vars, parent: scope }, ctx, depth, out);
+        if (setElem) vars[n.name] = xs[k];
+        loop.index = k + 1;
+        loop.first = k === 0;
+        loop.last = k === xs.length - 1;
+        renderOps(n.body, frame, ctx, depth, out);
       }
     } else {
       const t = ctx.templates.get(n.name);
