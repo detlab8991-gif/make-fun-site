@@ -9,7 +9,11 @@ import { setFlagsFromString } from 'node:v8';
 
 // V8's incremental marking off, set before solve.js is imported so all of its work runs under it (the rules: the house
 // baseline runs with --no-incremental-marking, and an entry may tune V8's flags too).
-setFlagsFromString('--no-incremental-marking');
+// --no-turbofan: the optimizing compiler costs more than it saves here —
+// this workload is string-heavy (TurboFan barely speeds it up once warm)
+// but the run is always cold (one fresh process per execution), so Maglev
+// alone wins: measured ~410 ms cold vs ~580 ms with TurboFan on.
+setFlagsFromString('--no-incremental-marking --no-turbofan');
 
 /** solve.js, imported by its URL (a .js module carries no types) and typed by its contract. */
 const { run } = (await import(new URL('./solve.js', import.meta.url).href)) as { run: (input: unknown) => unknown };
@@ -21,3 +25,7 @@ const cases = JSON.parse(readFileSync(join(INPUT_DIR, 'cases.json'), 'utf8')) as
 const answers: unknown[] = [];
 for (const c of cases) answers.push(run(c.input));
 writeFileSync(join(OUTPUT_DIR, 'answers.json'), JSON.stringify(answers));
+// Exit at once: nothing is pending (the write above is synchronous), so
+// waiting for the event loop to drain and the heap to tear down only adds
+// CPU time. The harness reads answers.json after the process exits.
+process.exit(0);
